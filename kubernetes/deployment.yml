@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-deployment
+  namespace: ops-home
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ops-home
+  template:
+    metadata:
+      labels:
+        app: ops-home
+    spec:
+      containers:
+        - name: ops-container
+          image: ghcr.io/ghrt-ai-2/ops-home-ghcr:<TAG>
+          ports:
+            - containerPort: 80
+          imagePullPolicy: IfNotPresent

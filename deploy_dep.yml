@@ -1,0 +1,11 @@
+name: ops-home-deployment
+channels:
+  - anaconda
+  - conda-forge
+dependencies:
+  - python=3.8.10
+  - pip:
+      - azureml-defaults
+      - numpy
+      - tensorflow
+      - opencv-python-headless
