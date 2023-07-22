@@ -1,0 +1,242 @@
+name: Ops Home Assignment Actions
+
+on:
+  workflow_call:
+    inputs:
+      preparation:
+        description: 'Data preparation'
+        type: boolean
+        required: true
+        default: true
+      pipeline_process:
+        description: 'Data processing during data preparation'
+        type: boolean
+        required: true
+        default: true
+      pipeline_split:
+        description: 'Data split during data preparation'
+        type: boolean
+        required: true
+        default: true
+      training:
+        description: 'Training'
+        type: boolean
+        required: true
+        default: true
+      deployment:
+        description: 'Deployment'
+        type: boolean
+        required: true
+        default: true
+      deployment_azure:
+        description: 'Azure deployment'
+        type: boolean
+        required: true
+        default: false
+      deployment_local:
+        description: 'Local deployment'
+        type: boolean
+        required: true
+        default: false
+
+  workflow_dispatch:
+    branches: [ main ]
+    inputs:
+      preparation:
+        description: 'Data preparation'
+        type: boolean
+        required: true
+        default: false
+      pipeline_process:
+        description: 'Data processing'
+        type: boolean
+        required: true
+        default: false
+      pipeline_split:
+        description: 'Data split'
+        type: boolean
+        required: true
+        default: false
+      training:
+        description: 'Training'
+        type: boolean
+        required: true
+        default: false
+      deployment:
+        description: 'Deployment'
+        type: boolean
+        required: true
+        default: false
+      deployment_azure:
+        description: 'Azure deployment'
+        type: boolean
+        required: true
+        default: false
+      deployment_local:
+        description: 'Local deployment'
+        type: boolean
+        required: true
+        default: false
+  
+env:
+  client_secret: ${{ secrets.CLIENT_SECRET }}
+  client_id: 68d118d0-08fb-423b-b825-82648131371b
+  tenant_id: 4ded4bb1-6bff-42b3-aed7-6a36a503bf7a
+
+  workspace: alecgheeraertml
+  resource_group: NathanReserve
+  subscription_id: 7c50f9c3-289b-4ae0-a075-08784b3b9042
+
+  emotions: happy,sad,angry,fearful
+  dataset_training: emotions_training_dataset
+  dataset_testing: emotions_testing_dataset
+  model_name: emotions-cnn
+
+  git_sha: ${{ github.sha }}
+
+jobs:
+  preparation:
+    if: ${{ inputs.preparation }}
+    runs-on: ubuntu-20.04
+
+    env:
+      split_factor: 0.2
+      pipeline_process: ${{ inputs.pipeline_process }}
+      pipeline_split: ${{ inputs.pipeline_split }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+      - name: python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8.10'
+          cache: 'pip'
+      - name: requirements
+        run: pip install -r requirements.txt
+      - name: script
+        id: preparation
+        run: python steps/preparation.py
+
+  training:
+    needs: [ preparation ]
+    if: ${{ always() && (needs.preparation.result == 'success' || needs.preparation.result == 'skipped') && inputs.training}}
+    runs-on: ubuntu-20.04
+
+    env:
+      learning_rate: 0.01
+      max_epochs: 2
+      batch_size: 32
+      patience: 11
+
+      compute_name: ops-compute-max
+      compute_min: 0
+      compute_max: 4
+      compute_sku: Standard_F8s_v2
+
+      training_dep: training_dep.yml
+      training_env: training-env
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+      - name: python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8.10'
+          cache: 'pip'
+      - name: requirements
+        run: pip install -r requirements.txt
+      - name: script
+        id: training
+        run: python steps/training.py
+
+  deployment:
+    needs: [ preparation, training ]
+    if: ${{ always() && (needs.preparation.result == 'success' || needs.preparation.result == 'skipped') && (needs.training.result == 'success' || needs.training.result == 'skipped') && inputs.deployment}}
+    runs-on: ubuntu-20.04
+
+    env:
+      deploy_dep: deploy_dep.yml
+      deploy_env: deploy-env
+      deploy_svc: deploy-svc
+      local_path: api/outputs
+
+      deployment_azure: ${{ inputs.deployment_azure }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+      - name: python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8.10'
+          cache: 'pip'
+      - name: requirements
+        run: pip install -r requirements.txt
+      - name: script
+        id: deployment
+        run: python steps/deployment.py
+      - name: artifact
+        if: inputs.deployment_local
+        uses: actions/upload-artifact@v3
+        with:
+          name: docker-config
+          path: api
+
+  deployment_docker:
+    needs: [ deployment ]
+    if: ${{ always() && (needs.deployment.result == 'success' || needs.deployment.result == 'skipped') && inputs.deployment_local }}
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: docker-config
+      - name: qemu
+        uses: docker/setup-qemu-action@v2
+      - name: buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+      - name: ghcr
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ghcr.io/ghrt-ai-2/ops-home-ghcr
+          flavor: latest=true
+          tags: |
+            type=ref,event=branch
+            type=sha
+      - name: build
+        id: docker_build
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+  deployment_api:
+    needs: [ deployment_docker ]
+    if: ${{ always() && (needs.deployment_docker.result == 'success') && inputs.deployment_local }}
+    runs-on: self-hosted
+
+    steps:
+        - name: checkout
+          uses: actions/checkout@v3
+        - name: tag
+          run: TAG=$(echo $git_sha | head -c7) && sed -i .back 's|<TAG>|sha-'${TAG}'|' kubernetes/deployment.yml
+        - name: kubernetes
+          run: |
+            kubectl apply -f kubernetes/deployment.yml
+            kubectl apply -f kubernetes/service.yml
+            kubectl rollout status deployment ops-deployment -n ops-home --timeout=600s
+            kubectl expose service ops-service --type=LoadBalancer --port=80 --target-port=8000
